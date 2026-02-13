@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Abismo - Fosa Oceánica</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;cursor:none;user-select:none}
+canvas{display:block}
+#ui{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:10;font-family:'Courier New',monospace}
+#depth{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);color:#0af;font-size:14px;opacity:.6;letter-spacing:2px}
+#gold{position:absolute;top:20px;right:20px;color:#fc0;font-size:16px;opacity:.7;letter-spacing:1px}
+.screen{position:fixed;top:0;left:0;width:100%;height:100%;z-index:100;display:none;flex-direction:column;align-items:center;justify-content:center;font-family:'Courier New',monospace}
+#death{background:rgba(0,0,0,.95);color:#f33}
+#surface{background:rgba(0,0,10,.9);color:#0af}
+#start{background:#000;display:flex;z-index:200}
+.screen h1{font-size:42px;letter-spacing:8px;margin-bottom:30px}
+.screen .s{color:#888;font-size:18px;margin:8px 0}
+.screen .s span{color:#fc0}
+.screen .btn{font-size:16px;margin-top:40px;cursor:pointer;pointer-events:auto;opacity:.7;letter-spacing:4px}
+.screen .btn:hover{opacity:1}
+#start h1{color:#0af;font-size:60px;letter-spacing:12px;margin-bottom:10px}
+#start .sub{color:#066;font-size:14px;letter-spacing:4px;margin-bottom:50px}
+#start .ctrl{color:#444;font-size:13px;line-height:2;text-align:center}
+#start .ctrl span{color:#0af}
+#cracks{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;opacity:0}
+</style>
+</head>
+<body>
+
+<div id="start" class="screen">
+<h1>ABISMO</h1>
+<div class="sub">FOSA OCEÁNICA INFINITA</div>
+<div class="ctrl">
+<span>WASD</span> — Nadar<br>
+<span>RATÓN</span> — Apuntar linterna<br>
+<span>CLICK DERECHO</span> — Sonar (gasta batería)
+</div>
+<div class="btn" style="color:#0af" onclick="startGame()">[ SUMERGIRSE ]</div>
+</div>
+
+<div id="death" class="screen">
+<h1>TRAJE COMPROMETIDO</h1>
+<div class="s">Profundidad máxima: <span id="dd">0</span>m</div>
+<div class="s">Oro perdido: <span id="dg">0</span></div>
+<div class="btn" style="color:#f33" onclick="restart()">[ INTENTAR DE NUEVO ]</div>
+</div>
+
+<div id="surface" class="screen">
+<h1>SUPERFICIE</h1>
+<div class="s">Profundidad alcanzada: <span id="sd">0</span>m</div>
+<div class="s">Oro recuperado: <span id="sg">0</span></div>
+<div class="s">Oro total: <span id="st">0</span></div>
+<div class="btn" style="color:#0af" onclick="restart()">[ SUMERGIRSE DE NUEVO ]</div>
+</div>
+
+<canvas id="cracks"></canvas>
+<div id="ui"><div id="depth">0m</div><div id="gold">ORO: 0</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@8/dist/pixi.min.js"></script>
+<script>
+'use strict';
+
+// ═══════════════════════════════════════
+// SIMPLEX NOISE
+// ═══════════════════════════════════════
+class SimplexNoise{
+  constructor(seed){
+    const F2=.5*(Math.sqrt(3)-1);
+    const G2=(3-Math.sqrt(3))/6;
+    this.F2=F2;this.G2=G2;
+    this.grad=[[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+    this.p=new Uint8Array(256);
+    this.perm=new Uint8Array(512);
+    let v=seed||Math.random()*65536;
+    for(let i=0;i<256;i++){v=(v*16807)%2147483647;this.p[i]=v&255}
+    for(let i=0;i<512;i++)this.perm[i]=this.p[i&255];
+  }
+  noise2D(x,y){
+    const{F2,G2,grad,perm}=this;
+    const s=(x+y)*F2;
+    const i=Math.floor(x+s),j=Math.floor(y+s);
+    const t=(i+j)*G2;
+    const x0=x-(i-t),y0=y-(j-t);
+    const i1=x0>y0?1:0,j1=x0>y0?0:1;
+    const x1=x0-i1+G2,y1=y0-j1+G2;
+    const x2=x0-1+2*G2,y2=y0-1+2*G2;
+    const ii=i&255,jj=j&255;
+    const gi0=perm[ii+perm[jj]]%8;
+    const gi1=perm[ii+i1+perm[jj+j1]]%8;
+    const gi2=perm[ii+1+perm[jj+1]]%8;
+    let n0=0,n1=0,n2=0;
+    let t0=.5-x0*x0-y0*y0;
+    if(t0>=0){t0*=t0;n0=t0*t0*(grad[gi0][0]*x0+grad[gi0][1]*y0)}
+    let t1=.5-x1*x1-y1*y1;
+    if(t1>=0){t1*=t1;n1=t1*t1*(grad[gi1][0]*x1+grad[gi1][1]*y1)}
+    let t2=.5-x2*x2-y2*y2;
+    if(t2>=0){t2*=t2;n2=t2*t2*(grad[gi2][0]*x2+grad[gi2][1]*y2)}
+    return 70*(n0+n1+n2);
+  }
+}
+
+// ═══════════════════════════════════════
+// GLOBALS
+// ═══════════════════════════════════════
+const W=window.innerWidth, H=window.innerHeight;
+let app,started=false,over=false,totalGold=0;
+let simplex,simplex2;
+let enemies=[],treasures=[],vents=[],chunks=new Set();
+
+const CHUNK=600, CAVE_W=400;
+const BUOY=-15, SWIM=320, DRAG=.97;
+const O2_RATE=.5, BATT_DRAIN=1.5, SONAR_COST=15;
+
+const S={
+  x:0,y:-50,vx:0,vy:0,
+  o2:100,bat:100,hull:100,gold:0,maxD:0,
+  mx:W/2,my:H/2,keys:{},
+  angle:0,sonar:false,sonarT:0,sonarX:0,sonarY:0,sonarR:0,
+  para:0,alive:true
+};
+
+// ═══════════════════════════════════════
+// AUDIO
+// ═══════════════════════════════════════
+let actx,hbInt=null;
+function initAudio(){
+  actx=new(window.AudioContext||window.webkitAudioContext)();
+  const o=actx.createOscillator();o.type='sine';o.frequency.value=45;
+  const f=actx.createBiquadFilter();f.type='lowpass';f.frequency.value=100;
+  const g=actx.createGain();g.gain.value=.08;
+  o.connect(f);f.connect(g);g.connect(actx.destination);o.start();
+  const o2=actx.createOscillator();o2.type='sine';o2.frequency.value=67;
+  const g2=actx.createGain();g2.gain.value=.04;
+  o2.connect(f);o2.start();
+}
+function snd(freq,freq2,dur,type,vol){
+  if(!actx)return;
+  const n=actx.currentTime,o=actx.createOscillator(),g=actx.createGain();
+  o.type=type||'sine';
+  o.frequency.setValueAtTime(freq,n);
+  if(freq2)o.frequency.exponentialRampToValueAtTime(freq2,n+dur);
+  g.gain.setValueAtTime(vol||.2,n);
+  g.gain.exponentialRampToValueAtTime(.001,n+dur);
+  o.connect(g);g.connect(actx.destination);o.start(n);o.stop(n+dur);
+}
+function heartbeat(){
+  if(!actx)return;
+  const n=actx.currentTime;
+  const o1=actx.createOscillator(),g1=actx.createGain();
+  o1.type='sine';o1.frequency.value=50;
+  g1.gain.setValueAtTime(0,n);g1.gain.linearRampToValueAtTime(.4,n+.05);
+  g1.gain.exponentialRampToValueAtTime(.001,n+.15);
+  o1.connect(g1);g1.connect(actx.destination);o1.start(n);o1.stop(n+.15);
+  const o2=actx.createOscillator(),g2=actx.createGain();
+  o2.type='sine';o2.frequency.value=40;
+  g2.gain.setValueAtTime(0,n+.15);g2.gain.linearRampToValueAtTime(.3,n+.2);
+  g2.gain.exponentialRampToValueAtTime(.001,n+.35);
+  o2.connect(g2);g2.connect(actx.destination);o2.start(n+.15);o2.stop(n+.35);
+}
+
+// ═══════════════════════════════════════
+// CAVE GENERATION
+// ═══════════════════════════════════════
+function caveAt(wy){
+  const y=wy*.003;
+  const n1=simplex.noise2D(y,0)*150;
+  const n2=simplex2.noise2D(y*2,10)*80;
+  const n3=simplex.noise2D(y*.3,20)*60;
+  const cx=simplex.noise2D(y*.5,5)*100;
+  const depth=Math.max(0,wy)/100;
+  const sq=Math.max(.4,1-depth*.008);
+  const hw=(CAVE_W+n1+n2)*sq*.5;
+  return{l:cx-hw+n3, r:cx+hw-n3, cx};
+}
+
+function genChunk(ci){
+  if(chunks.has(ci))return;
+  chunks.add(ci);
+  const sy=ci*CHUNK, depth=Math.max(0,sy)/100;
+  // Vents
+  for(let i=0;i<1+Math.floor(Math.random()*2);i++){
+    const vy=sy+Math.random()*CHUNK;
+    const w=caveAt(vy);
+    vents.push({x:w.l+Math.random()*(w.r-w.l),y:vy,t:Math.random()*6.28});
+  }
+  // Treasures
+  if(depth>.5){
+    for(let i=0;i<Math.floor(1+depth*.3+Math.random()*2);i++){
+      const ty=sy+Math.random()*CHUNK;
+      const w=caveAt(ty);
+      const art=Math.random()<.15&&depth>2;
+      treasures.push({x:w.l+20+Math.random()*(w.r-w.l-40),y:ty,
+        val:art?50+Math.floor(depth*10):5+Math.floor(depth*3),
+        art,col:false,glow:Math.random()*6.28});
+    }
+  }
+  // Enemies
+  if(depth>.3){
+    for(let i=0;i<Math.floor(1+depth*.4+Math.random()*2);i++){
+      const ey=sy+Math.random()*CHUNK;
+      const w=caveAt(ey);
+      const r=Math.random();
+      const type=r<.4?'lamp':r<.75?'jelly':'eel';
+      const ex=w.l+30+Math.random()*(w.r-w.l-60);
+      enemies.push({x:ex,y:ey,type,vx:0,vy:0,t:Math.random()*6.28,
+        charge:false,bx:ex,by:ey,gt:Math.random()*6});
+    }
+  }
+}
+
+function cleanup(){
+  const md=CHUNK*5;
+  enemies=enemies.filter(e=>Math.abs(e.y-S.y)<md);
+  treasures=treasures.filter(t=>!t.col&&Math.abs(t.y-S.y)<md);
+  vents=vents.filter(v=>Math.abs(v.y-S.y)<md);
+  const cc=Math.floor(S.y/CHUNK);
+  for(const c of chunks)if(Math.abs(c-cc)>6)chunks.delete(c);
+}
+
+// ═══════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════
+function dist(x1,y1,x2,y2){return Math.sqrt((x2-x1)**2+(y2-y1)**2)}
+
+function inCone(wx,wy){
+  if(S.bat<=0)return false;
+  const dx=wx-S.x,dy=wy-S.y,d=Math.sqrt(dx*dx+dy*dy);
+  if(d>300)return false;
+  let diff=Math.atan2(dy,dx)-S.angle;
+  while(diff>Math.PI)diff-=Math.PI*2;
+  while(diff<-Math.PI)diff+=Math.PI*2;
+  return Math.abs(diff)<.45;
+}
+
+// ═══════════════════════════════════════
+// PIXI INIT & GAME LOOP
+// ═══════════════════════════════════════
+async function initGame(){
+  app=new PIXI.Application();
+  await app.init({width:W,height:H,backgroundColor:0x000005,antialias:false,resolution:1});
+  document.body.insertBefore(app.canvas,document.body.firstChild);
+
+  simplex=new SimplexNoise(Math.random()*99999);
+  simplex2=new SimplexNoise(Math.random()*99999);
+
+  // Graphics layers
+  const gSurf=new PIXI.Graphics();
+  const gLight=new PIXI.Graphics();
+  const gCave=new PIXI.Graphics();
+  const gVent=new PIXI.Graphics();
+  const gTreas=new PIXI.Graphics();
+  const gEnemy=new PIXI.Graphics();
+  const gPart=new PIXI.Graphics();
+  const gPlayer=new PIXI.Graphics();
+  const gO2=new PIXI.Graphics();
+  const gBat=new PIXI.Graphics();
+  const gSonar=new PIXI.Graphics();
+  const gVig=new PIXI.Graphics();
+
+  const cont=new PIXI.Container();
+  cont.addChild(gSurf,gLight,gCave,gVent,gTreas,gEnemy,gPart,gPlayer,gO2,gBat,gSonar,gVig);
+  app.stage.addChild(cont);
+
+  // Input
+  window.addEventListener('keydown',e=>{S.keys[e.key.toLowerCase()]=true;e.preventDefault()});
+  window.addEventListener('keyup',e=>{S.keys[e.key.toLowerCase()]=false});
+  window.addEventListener('mousemove',e=>{S.mx=e.clientX;S.my=e.clientY});
+  window.addEventListener('contextmenu',e=>{
+    e.preventDefault();
+    if(!started||over)return;
+    if(S.bat>=SONAR_COST){
+      S.bat-=SONAR_COST;S.sonar=true;S.sonarT=0;
+      S.sonarX=S.x;S.sonarY=S.y;S.sonarR=0;
+      snd(1200,200,.8,'sine',.3);
+    }
+  });
+
+  for(let c=-2;c<=3;c++)genChunk(c);
+
+  let last=performance.now();
+  let vigTimer=0;
+
+  // ── MAIN LOOP ──
+  app.ticker.add(()=>{
+    if(!started||over)return;
+    const now=performance.now();
+    const dt=Math.min((now-last)/1000,.05);
+    last=now;
+    const t=now/1000;
+    const cx=S.x,cy=S.y;
+
+    // Flashlight angle
+    S.angle=Math.atan2(S.my-H/2,S.mx-W/2);
+
+    // Movement
+    if(S.para>0){S.para-=dt}else{
+      let ax=0,ay=0;
+      if(S.keys['w']||S.keys['arrowup'])ay-=SWIM;
+      if(S.keys['s']||S.keys['arrowdown'])ay+=SWIM;
+      if(S.keys['a']||S.keys['arrowleft'])ax-=SWIM;
+      if(S.keys['d']||S.keys['arrowright'])ax+=SWIM;
+      S.vx+=ax*dt;S.vy+=ay*dt;
+    }
+
+    // Buoyancy
+    S.vy+=(BUOY-Math.max(0,S.y)*.01)*dt;
+    S.vx*=Math.pow(DRAG,dt*60);
+    S.vy*=Math.pow(DRAG,dt*60);
+
+    const nx=S.x+S.vx*dt, ny=S.y+S.vy*dt;
+    const w=caveAt(ny);
+    if(nx<w.l+12){S.x=w.l+12;if(Math.abs(S.vx)>30){S.hull-=2;snd(80,40,.3,'sawtooth',.2)}S.vx=Math.abs(S.vx)*.3}
+    else if(nx>w.r-12){S.x=w.r-12;if(Math.abs(S.vx)>30){S.hull-=2;snd(80,40,.3,'sawtooth',.2)}S.vx=-Math.abs(S.vx)*.3}
+    else S.x=nx;
+    S.y=ny;
+
+    // Surface check
+    if(S.y<-60&&S.gold>0){over=true;totalGold+=S.gold;showSurface();return}
+    if(S.y<-60)S.y=-60;
+
+    const curD=Math.max(0,Math.floor(S.y/10));
+    if(curD>S.maxD)S.maxD=curD;
+
+    // Resources
+    S.o2-=O2_RATE*dt;
+    if(S.bat>0)S.bat-=BATT_DRAIN*dt;
+    S.bat=Math.max(0,S.bat);
+    if(S.y<50)S.o2=Math.min(100,S.o2+dt*2);
+
+    // Vent oxygen
+    for(const v of vents){
+      if(dist(S.x,S.y,v.x,v.y)<40){
+        S.o2=Math.min(100,S.o2+dt*8);
+        if(Math.random()<dt*3)snd(600+Math.random()*400,1200,.1,'sine',.08);
+      }
+    }
+
+    // Treasure
+    for(const tr of treasures){
+      if(!tr.col&&dist(S.x,S.y,tr.x,tr.y)<20){
+        tr.col=true;S.gold+=tr.val;
+        snd(400,800,.15,'triangle',.2);
+      }
+    }
+
+    // Enemy AI
+    for(const e of enemies){
+      const d=dist(S.x,S.y,e.x,e.y);
+      if(e.type==='lamp'){
+        e.t+=dt*2;e.x=e.bx+Math.sin(e.t)*80;e.y=e.by+Math.cos(e.t*.7)*20;
+        if(d<20){S.hull-=15*dt;if(Math.random()<dt*2)snd(80,40,.3,'sawtooth',.2)}
+      }else if(e.type==='jelly'){
+        e.x=e.bx+Math.sin(e.t+t*.3)*10;e.y=e.by+Math.cos(e.t+t*.5)*8;
+        if(d<25){S.para=2;S.hull-=5*dt;if(Math.random()<dt)snd(80,40,.3,'sawtooth',.2)}
+      }else if(e.type==='eel'){
+        const il=inCone(e.x,e.y);
+        if(il&&d<250){
+          e.charge=true;
+          const a=Math.atan2(S.y-e.y,S.x-e.x);
+          e.vx+=Math.cos(a)*400*dt;e.vy+=Math.sin(a)*400*dt;
+        }else{
+          e.charge=false;
+          e.vx+=(e.bx-e.x)*.5*dt;e.vy+=(e.by-e.y)*.5*dt;
+        }
+        e.vx*=.98;e.vy*=.98;e.x+=e.vx*dt;e.y+=e.vy*dt;
+        if(d<20){S.hull-=25*dt;S.bat-=10*dt;if(Math.random()<dt*3)snd(80,40,.3,'sawtooth',.2)}
+      }
+    }
+
+    // Sonar
+    if(S.sonar){S.sonarR+=400*dt;if(S.sonarR>500)S.sonar=false}
+
+    // Death
+    if(S.o2<=0||S.hull<=0){S.alive=false;over=true;showDeath();return}
+
+    // Heartbeat
+    if(S.o2<20){if(!hbInt)hbInt=setInterval(heartbeat,800)}
+    else{if(hbInt){clearInterval(hbInt);hbInt=null}}
+
+    // Chunks
+    const cc=Math.floor(S.y/CHUNK);
+    for(let c=cc-2;c<=cc+3;c++)genChunk(c);
+    if(Math.random()<dt*.1)cleanup();
+
+    // ═══ RENDERING ═══
+    const hw=W/2,hh=H/2;
+
+    // -- Surface --
+    gSurf.clear();
+    if(cy<100){
+      const sy=(0-cy)+hh;
+      gSurf.moveTo(0,sy);
+      for(let x=0;x<=W;x+=10){
+        const wave=Math.sin((x+t*100)*.02)*5+Math.sin((x+t*60)*.05)*3;
+        gSurf.lineTo(x,sy+wave);
+      }
+      gSurf.lineTo(W,0).lineTo(0,0).closePath().fill({color:0x0044aa,alpha:.3});
+      // Light rays
+      if(sy>-50&&sy<H){
+        for(let r=0;r<5;r++){
+          const rx=W*.15+r*W*.18;
+          const sw=Math.sin(t*.5+r)*20;
+          gSurf.moveTo(rx+sw-15,sy).lineTo(rx+sw+15,sy)
+            .lineTo(rx+sw+40,sy+300).lineTo(rx+sw-40,sy+300).closePath()
+            .fill({color:0x88ccff,alpha:.03});
+        }
+      }
+    }
+
+    // -- Flashlight --
+    gLight.clear();
+    if(S.bat>0){
+      const px=hw,py=hh; // player is always centered
+      const a=S.angle,range=250+S.bat*1.5;
+      for(let layer=3;layer>=0;layer--){
+        const r=range*(.4+layer*.2);
+        const al=.03+layer*.02;
+        const sp=.35+layer*.08;
+        gLight.moveTo(px,py)
+          .lineTo(px+Math.cos(a-sp)*r,py+Math.sin(a-sp)*r)
+          .quadraticCurveTo(px+Math.cos(a)*r,py+Math.sin(a)*r,
+            px+Math.cos(a+sp)*r,py+Math.sin(a+sp)*r)
+          .closePath().fill({color:0xaaddff,alpha:al});
+      }
+      // Bright core
+      gLight.circle(px+Math.cos(a)*30,py+Math.sin(a)*30,15)
+        .fill({color:0xffffff,alpha:.06});
+    }
+
+    // -- Cave walls --
+    gCave.clear();
+    const steps=Math.ceil(H/8)+4;
+    const swY=cy-hh-16;
+    // Left
+    gCave.moveTo(0,0);
+    for(let i=0;i<=steps;i++){
+      const wy=swY+i*8;
+      const ww=caveAt(wy);
+      gCave.lineTo((ww.l-cx)+hw,i*8);
+    }
+    gCave.lineTo(0,steps*8).closePath().fill(0x0a0a12);
+    // Right
+    gCave.moveTo(W,0);
+    for(let i=0;i<=steps;i++){
+      const wy=swY+i*8;
+      const ww=caveAt(wy);
+      gCave.lineTo((ww.r-cx)+hw,i*8);
+    }
+    gCave.lineTo(W,steps*8).closePath().fill(0x0a0a12);
+    // Wall texture
+    for(let i=0;i<=steps;i+=3){
+      const wy=swY+i*8;
+      const ww=caveAt(wy);
+      const lx=(ww.l-cx)+hw,rx=(ww.r-cx)+hw,sy2=i*8;
+      gCave.moveTo(lx,sy2).lineTo(lx-15-simplex.noise2D(wy*.1,100)*10,sy2+4)
+        .stroke({width:1,color:0x1a1a2e,alpha:.4});
+      gCave.moveTo(rx,sy2).lineTo(rx+15+simplex.noise2D(wy*.1,200)*10,sy2+4)
+        .stroke({width:1,color:0x1a1a2e,alpha:.4});
+    }
+
+    // -- Vents --
+    gVent.clear();
+    for(const v of vents){
+      const vsx=(v.x-cx)+hw,vsy=(v.y-cy)+hh;
+      if(vsx<-50||vsx>W+50||vsy<-100||vsy>H+50)continue;
+      v.t+=.02;
+      // Crack
+      gVent.moveTo(vsx-8,vsy).lineTo(vsx+8,vsy).stroke({width:2,color:0x334455,alpha:.5});
+      // Bubbles
+      for(let b=0;b<4;b++){
+        const by2=vsy-((v.t*50+b*30)%120);
+        const bx2=vsx+Math.sin(v.t*2+b*1.5)*8;
+        const al=Math.max(0,1-((vsy-by2)/120));
+        gVent.circle(bx2,by2,2+Math.sin(v.t+b)*.5).fill({color:0xffffff,alpha:al*.5});
+      }
+    }
+
+    // -- Treasures --
+    gTreas.clear();
+    for(const tr of treasures){
+      if(tr.col)continue;
+      const tsx=(tr.x-cx)+hw,tsy=(tr.y-cy)+hh;
+      if(tsx<-50||tsx>W+50||tsy<-50||tsy>H+50)continue;
+      const il=inCone(tr.x,tr.y);
+      const is2=S.sonar&&dist(tr.x,tr.y,S.sonarX,S.sonarY)<S.sonarR+20;
+      if(!il&&!is2)continue;
+      tr.glow+=.03;
+      const pulse=.7+Math.sin(tr.glow)*.3;
+      if(tr.art){
+        gTreas.moveTo(tsx,tsy-8).lineTo(tsx+6,tsy).lineTo(tsx,tsy+8).lineTo(tsx-6,tsy).closePath()
+          .fill({color:0xaa44ff,alpha:.9*pulse});
+        gTreas.circle(tsx,tsy,15).fill({color:0xcc66ff,alpha:.15});
+      }else{
+        gTreas.circle(tsx,tsy,4).fill({color:0xffcc00,alpha:.8*pulse});
+        gTreas.circle(tsx,tsy,10).fill({color:0xffdd44,alpha:.1});
+      }
+    }
+
+    // -- Enemies --
+    gEnemy.clear();
+    for(const e of enemies){
+      const esx=(e.x-cx)+hw,esy=(e.y-cy)+hh;
+      if(esx<-100||esx>W+100||esy<-100||esy>H+100)continue;
+      const il=inCone(e.x,e.y);
+      const is2=S.sonar&&dist(e.x,e.y,S.sonarX,S.sonarY)<S.sonarR+30;
+
+      if(e.type==='lamp'){
+        const al=(il||is2) ? 0.7 : 0.08;
+        const wave=Math.sin(t*3+e.t)*15;
+        gEnemy.moveTo(esx-20,esy+wave)
+          .bezierCurveTo(esx-7,esy-wave*.5,esx+7,esy+wave*.5,esx+20,esy-wave)
+          .stroke({width:3,color:0x88aacc,alpha:al});
+        gEnemy.circle(esx+20,esy-wave,3).fill({color:0xaaccee,alpha:al});
+      }else if(e.type==='jelly'){
+        e.gt+=.016;
+        const glow=Math.sin(e.gt*2.1)>.7;
+        const al=glow ? 0.8 : ((il||is2) ? 0.5 : 0.15);
+        const col=glow?0x44ff66:0x22aa44;
+        gEnemy.ellipse(esx,esy,12,8).fill({color:col,alpha:al});
+        for(let tt=0;tt<5;tt++){
+          const tx2=esx-8+tt*4;
+          const tl=20+Math.sin(t*2+tt)*5;
+          gEnemy.moveTo(tx2,esy+6)
+            .lineTo(tx2+Math.sin(t*1.5+tt*2)*4,esy+6+tl)
+            .stroke({width:1,color:col,alpha:al*.7});
+        }
+        if(glow)gEnemy.circle(esx,esy,30).fill({color:0x44ff66,alpha:.1});
+      }else if(e.type==='eel'){
+        const al=(il||is2) ? 0.9 : 0.1;
+        const col=e.charge?0xffff44:0x6688ff;
+        gEnemy.moveTo(esx-25,esy);
+        for(let ss=1;ss<=6;ss++){
+          gEnemy.lineTo(esx-25+ss*(50/6),esy+Math.sin(t*4+ss+e.t)*8);
+        }
+        gEnemy.stroke({width:4,color:col,alpha:al});
+        if(e.charge){
+          for(let sp=0;sp<3;sp++){
+            const spx=esx+(Math.random()-.5)*40,spy=esy+(Math.random()-.5)*20;
+            gEnemy.moveTo(spx,spy)
+              .lineTo(spx+(Math.random()-.5)*10,spy+(Math.random()-.5)*10)
+              .stroke({width:1,color:0xffff88,alpha:.6});
+          }
+        }
+      }
+    }
+
+    // -- Particles --
+    gPart.clear();
+    // Rising bubbles
+    for(let i=0;i<30;i++){
+      const seed=i*137.5;
+      const bx=simplex.noise2D(seed,t*.2)*W*2+S.x;
+      const by=S.y-H+((t*20+seed*10)%(H*2));
+      const bsx=(bx-cx)+hw,bsy=(by-cy)+hh;
+      if(bsx<0||bsx>W||bsy<0||bsy>H)continue;
+      const il=inCone(bx,by);
+      gPart.circle(bsx,bsy,1).fill({color:0xaaddff,alpha:il ? 0.3 : 0.05});
+    }
+    // Sediment in light
+    for(let i=0;i<20;i++){
+      const seed=i*237.1+1000;
+      const px2=S.x+simplex.noise2D(seed,t*.1)*W;
+      const py2=S.y+simplex.noise2D(seed+500,t*.08)*H;
+      const psx=(px2-cx)+hw,psy=(py2-cy)+hh;
+      if(psx<0||psx>W||psy<0||psy>H)continue;
+      if(inCone(px2,py2))gPart.circle(psx,psy,1.5).fill({color:0xeeddaa,alpha:.25});
+    }
+
+    // -- Player --
+    gPlayer.clear();
+    const psx=hw,psy=hh;
+    gPlayer.ellipse(psx,psy,10,14).fill(0x334455);
+    gPlayer.circle(psx,psy-10,8).fill(0x556677);
+    gPlayer.circle(psx+Math.cos(S.angle)*3,psy-10+Math.sin(S.angle)*3,4)
+      .fill({color:0x88ccff,alpha:.6});
+    // Cracks
+    if(S.hull<70){
+      const cc2=Math.floor((100-S.hull)/15);
+      for(let i=0;i<cc2;i++){
+        const a2=(i/cc2)*Math.PI*2+.5;
+        const cx2=psx+Math.cos(a2)*6,cy2=psy-10+Math.sin(a2)*6;
+        gPlayer.moveTo(cx2,cy2).lineTo(cx2+Math.cos(a2)*5,cy2+Math.sin(a2)*5)
+          .stroke({width:1,color:0xff3333,alpha:.8});
+      }
+    }
+    // Fins
+    const sa=Math.sin(t*8)*5;
+    gPlayer.moveTo(psx-6,psy+12).lineTo(psx-10+sa,psy+22).lineTo(psx,psy+14).closePath().fill(0x2a3a4a);
+    gPlayer.moveTo(psx+6,psy+12).lineTo(psx+10-sa,psy+22).lineTo(psx,psy+14).closePath().fill(0x2a3a4a);
+
+    // -- O2 bar --
+    gO2.clear();
+    const o2x=psx+16,o2y=psy-20,barH=30;
+    gO2.rect(o2x,o2y,4,barH).fill({color:0x111122,alpha:.6});
+    const fh=barH*(S.o2/100);
+    const low=S.o2<20;
+    const o2col=low?(Math.sin(t*10)>0?0xff2222:0x882222):0x00ccff;
+    gO2.rect(o2x,o2y+(barH-fh),4,fh).fill({color:o2col,alpha:.9});
+
+    // -- Battery bar --
+    gBat.clear();
+    const bx2=psx-20,by2=psy-20;
+    gBat.rect(bx2,by2,4,barH).fill({color:0x111122,alpha:.6});
+    const bfh=barH*(S.bat/100);
+    gBat.rect(bx2,by2+(barH-bfh),4,bfh).fill({color:S.bat<20?0xff8800:0xffff00,alpha:.7});
+
+    // -- Sonar --
+    gSonar.clear();
+    if(S.sonar){
+      const ssx=(S.sonarX-cx)+hw,ssy=(S.sonarY-cy)+hh;
+      const al1=Math.max(0,1-S.sonarR/500);
+      gSonar.circle(ssx,ssy,S.sonarR).stroke({width:2,color:0x00ffaa,alpha:al1});
+      gSonar.circle(ssx,ssy,S.sonarR*.7).stroke({width:1,color:0x00ffaa,alpha:al1*.5});
+    }
+
+    // -- Vignette --
+    vigTimer+=dt;
+    if(vigTimer>.2){
+      vigTimer=0;
+      gVig.clear();
+      const depth2=Math.max(0,S.y)/100;
+      const inten=Math.min(.85,.3+depth2*.05);
+      // Simple edge darkening rings
+      const maxR=Math.sqrt(hw*hw+hh*hh);
+      for(let ring=0;ring<4;ring++){
+        const r=maxR*(.5+ring*.15);
+        const al2=inten*(ring+1)/4*.15;
+        // Dark border rectangle with circular cut
+        gVig.rect(0,0,W,H).fill({color:0x000000,alpha:al2}).circle(hw,hh,r).cut();
+      }
+    }
+
+    // UI
+    document.getElementById('depth').textContent=curD+'m';
+    document.getElementById('depth').style.color=curD>500?'#f44':curD>200?'#fa0':'#0af';
+    document.getElementById('gold').textContent='ORO: '+S.gold;
+
+    // Crack overlay
+    if(S.hull<70)drawCracks();
+  });
+}
+
+// ═══════════════════════════════════════
+// CRACK OVERLAY (canvas 2D)
+// ═══════════════════════════════════════
+function drawCracks(){
+  const c=document.getElementById('cracks');
+  const ctx=c.getContext('2d');
+  c.width=W;c.height=H;
+  const dmg=100-S.hull;
+  c.style.opacity=Math.min(1,(dmg-30)/70);
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle=`rgba(100,200,255,${.3+dmg/200})`;
+  ctx.lineWidth=1;
+  const n=Math.floor(dmg/10);
+  for(let i=0;i<n;i++){
+    const sx=(42*(i+1)*7)%W,sy=(42*(i+1)*13)%H;
+    ctx.beginPath();ctx.moveTo(sx,sy);
+    let px=sx,py=sy;
+    for(let s=0;s<3+Math.floor(dmg/20);s++){
+      px+=Math.sin(i*3+s*2)*30;py+=Math.cos(i*5+s*3)*30;
+      ctx.lineTo(px,py);
+    }
+    ctx.stroke();
+  }
+}
+
+// ═══════════════════════════════════════
+// SCREENS
+// ═══════════════════════════════════════
+function showDeath(){
+  if(hbInt){clearInterval(hbInt);hbInt=null}
+  document.getElementById('dd').textContent=S.maxD;
+  document.getElementById('dg').textContent=S.gold;
+  document.getElementById('death').style.display='flex';
+  snd(200,30,2,'sawtooth',.3);
+}
+function showSurface(){
+  if(hbInt){clearInterval(hbInt);hbInt=null}
+  document.getElementById('sd').textContent=S.maxD;
+  document.getElementById('sg').textContent=S.gold;
+  document.getElementById('st').textContent=totalGold;
+  document.getElementById('surface').style.display='flex';
+}
+
+function resetState(){
+  S.x=0;S.y=-50;S.vx=0;S.vy=0;
+  S.o2=100;S.bat=100;S.hull=100;S.gold=0;S.maxD=0;
+  S.sonar=false;S.para=0;S.alive=true;S.keys={};
+  enemies=[];treasures=[];vents=[];chunks.clear();
+  simplex=new SimplexNoise(Math.random()*99999);
+  simplex2=new SimplexNoise(Math.random()*99999);
+  for(let c=-2;c<=3;c++)genChunk(c);
+  over=false;
+  document.getElementById('cracks').style.opacity=0;
+}
+
+function startGame(){
+  document.getElementById('start').style.display='none';
+  started=true;
+  initAudio();
+  initGame();
+}
+function restart(){
+  document.getElementById('death').style.display='none';
+  document.getElementById('surface').style.display='none';
+  resetState();
+}
+
+window.addEventListener('wheel',e=>e.preventDefault(),{passive:false});
+</script>
+</body>
+</html>
